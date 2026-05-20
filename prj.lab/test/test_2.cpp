@@ -657,69 +657,6 @@ cv::Mat rectifyDocument(const cv::Mat& original,
 // ============================================================================
 
 /**
-* Creates a binary mask from a 4-point polygon outline.
-*/
-cv::Mat createQuadOutlineMask(const std::vector<cv::Point2f>& corners, cv::Size imgSize, int thickness = 1) {
-    cv::Mat mask = cv::Mat::zeros(imgSize, CV_8U);
-    if (corners.size() != 4) return mask;
-
-    std::vector<cv::Point> intCorners(4);
-    for (int i = 0; i < 4; ++i) {
-        intCorners[i] = cv::Point(cv::saturate_cast<int>(corners[i].x),
-                                  cv::saturate_cast<int>(corners[i].y));
-    }
-    cv::polylines(mask, intCorners, true, cv::Scalar(255), thickness);
-    return mask;
-}
-
-/**
-* Evaluates detection quality by comparing detected quad outline with GT outline.
-* Uses a tolerance band (dilation) around GT to account for minor misalignments.
-*/
-struct QualityMetrics {
-    float precision; // Сколько из найденных пикселей контура совпадает с эталоном
-    float recall;    // Сколько пикселей эталона удалось найти
-    float f1;        // Гармоническое среднее
-    float iou;       // Intersection over Union (Jaccard)
-};
-
-QualityMetrics evaluatePixelQuality(const std::vector<cv::Point2f>& detectedCorners,
-                                    const std::vector<cv::Point2f>& gtCorners,
-                                    cv::Size imgSize,
-                                    int tolerancePx = 5)
-{
-    // Создаем маски контуров
-    cv::Mat detMask = createQuadOutlineMask(detectedCorners, imgSize, 1);
-    cv::Mat gtMask  = createQuadOutlineMask(gtCorners, imgSize, 1);
-
-    // Расширяем эталон для допуска (tolerance band)
-    cv::Mat gtDilated;
-    int kernelSize = 2 * tolerancePx + 1;
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernelSize, kernelSize));
-    cv::dilate(gtMask, gtDilated, kernel);
-
-    // Подсчет пересечений и объединений
-    cv::Mat intersection, unionMask;
-    cv::bitwise_and(detMask, gtDilated, intersection);
-    cv::bitwise_or(detMask, gtDilated, unionMask);
-
-    int tp = cv::countNonZero(intersection);
-    int detPixels = cv::countNonZero(detMask);
-    int gtPixels = cv::countNonZero(gtDilated);
-
-    int fp = detPixels - tp; // Ложные срабатывания (шум/сдвиг)
-    int fn = gtPixels - tp;  // Пропуски (не найденные части)
-
-    QualityMetrics m;
-    m.precision = (tp + fp > 0) ? (float)tp / (tp + fp) : 0.0f;
-    m.recall    = (tp + fn > 0) ? (float)tp / (tp + fn) : 0.0f;
-    m.f1        = (m.precision + m.recall > 0) ? (2.0f * m.precision * m.recall) / (m.precision + m.recall) : 0.0f;
-    m.iou       = (cv::countNonZero(unionMask) > 0) ? (float)tp / cv::countNonZero(unionMask) : 0.0f;
-
-    return m;
-}
-
-/**
 * Парсит Ground Truth координаты из JSON-файла аннотаций (формат VIA v2)
 * Возвращает вектор из 4 точек (порядок обрабатывается sortCorners автоматически)
 */
@@ -756,19 +693,6 @@ std::vector<cv::Point2f> parseGTJSON(const std::string& jsonPath) {
         std::cerr << "Warning: Failed to parse GT JSON: " << e.what() << std::endl;
     }
     return points;
-}
-void visualizeGTOverlay(const cv::Mat& img, const std::vector<cv::Point2f>& gtCorners,
-                        const std::string& savePath) {
-    cv::Mat vis = img.clone();
-    std::vector<cv::Point> pts(4);
-    for(int i=0; i<4; i++) pts[i] = cv::Point((int)gtCorners[i].x, (int)gtCorners[i].y);
-
-    // Рисуем GT контур (фиолетовый)
-    cv::polylines(vis, pts, true, cv::Scalar(255, 0, 255), 4);
-    for(const auto& p : pts) cv::circle(vis, p, 8, cv::Scalar(255, 0, 255), -1);
-
-    cv::imwrite(savePath, vis);
-    std::cout << "  [Saved] GT Overlay: " << savePath << std::endl;
 }
 /**
 * Оценивает качество работы Canny edge detector относительно Ground Truth контура.
@@ -998,7 +922,7 @@ int main(int argc, char** argv) {
         std::cerr << "Error: Could not read image: " << inputPath << std::endl;
         return -1;
     }
-    std::cout << "Input image: " << inputPath 
+    std::cout << "Input image: " << inputPath
               << " (" << inputImage.cols << "x" << inputImage.rows << ")" << std::endl;
 
     // ------------------------------------------------------------------
@@ -1022,7 +946,7 @@ int main(int argc, char** argv) {
     std::cout << "\n=== STEPS 3-5: Contour Detection, Approximation, Corner Extraction ===" << std::endl;
 
     for (size_t s = 0; s < binarization.masks.size() && !found; s++) {
-        std::cout << "\n--- Trying strategy " << s << ": " 
+        std::cout << "\n--- Trying strategy " << s << ": "
                   << binarization.names[s] << " ---" << std::endl;
 
         // STEP 3: Find and filter contours
@@ -1043,7 +967,7 @@ int main(int argc, char** argv) {
                 detectedCorners = corners;
                 found = true;
                 successStrategy = (int)s;
-                std::cout << "  *** SUCCESS with strategy " << s 
+                std::cout << "  *** SUCCESS with strategy " << s
                           << ", contour " << c << " ***" << std::endl;
             }
         }
@@ -1074,7 +998,7 @@ int main(int argc, char** argv) {
     const char* labels[] = {"Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"};
     std::cout << "\n  Detected corners (on resized image):" << std::endl;
     for (int i = 0; i < 4; i++) {
-        std::cout << "    " << labels[i] << ": (" 
+        std::cout << "    " << labels[i] << ": ("
                   << detectedCorners[i].x << ", " << detectedCorners[i].y << ")" << std::endl;
     }
 
@@ -1109,7 +1033,7 @@ int main(int argc, char** argv) {
 
         // Draw edges
         for (int i = 0; i < 4; i++) {
-            cv::line(finalVis, 
+            cv::line(finalVis,
                      cv::Point((int)detectedCorners[i].x, (int)detectedCorners[i].y),
                      cv::Point((int)detectedCorners[(i+1)%4].x, (int)detectedCorners[(i+1)%4].y),
                      cv::Scalar(0, 255, 0), 3);
@@ -1151,7 +1075,7 @@ int main(int argc, char** argv) {
 
     std::cout << "\n  Corners scaled to original image coordinates:" << std::endl;
     for (int i = 0; i < 4; i++) {
-        std::cout << "    " << labels[i] << ": (" 
+        std::cout << "    " << labels[i] << ": ("
                   << originalCorners[i].x << ", " << originalCorners[i].y << ")" << std::endl;
     }
 
