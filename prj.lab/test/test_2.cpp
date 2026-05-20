@@ -937,153 +937,123 @@ int main(int argc, char** argv) {
     BinarizationResult binarization = binarize(preproc);
 
     // ------------------------------------------------------------------
-    // STEPS 3-5: Try each binarization strategy
+    // STEPS 3-5: Full Strategy Evaluation & Processing
     // ------------------------------------------------------------------
-    std::vector<cv::Point2f> detectedCorners;
-    bool found = false;
-    int successStrategy = -1;
+    struct StrategyResult {
+        int strategyIdx;
+        std::string strategyName;
+        std::vector<cv::Point2f> corners; // В масштабе resized изображения
+    };
 
-    std::cout << "\n=== STEPS 3-5: Contour Detection, Approximation, Corner Extraction ===" << std::endl;
+    std::vector<StrategyResult> allResults;
 
-    for (size_t s = 0; s < binarization.masks.size() && !found; s++) {
-        std::cout << "\n--- Trying strategy " << s << ": "
-                  << binarization.names[s] << " ---" << std::endl;
+    std::cout << "\n=== STEPS 3-5: Running ALL Strategies ===" << std::endl;
 
-        // STEP 3: Find and filter contours
+    // 1. Перебираем ВСЕ стратегии без раннего выхода (!found больше нет)
+    for (size_t s = 0; s < binarization.masks.size(); ++s) {
+        std::cout << "\n--- Testing strategy " << s << ": " << binarization.names[s] << " ---" << std::endl;
+
         std::vector<std::vector<cv::Point>> contours = findAndFilterContours(
             binarization.masks[s], preproc.original, binarization.names[s], (int)s);
 
         if (contours.empty()) {
-            std::cout << "  No valid contours found, trying next strategy..." << std::endl;
+            std::cout << "  No contours found." << std::endl;
             continue;
         }
 
-        // STEP 4: Try polygon approximation on the top contours
-        for (size_t c = 0; c < contours.size() && c < 5 && !found; c++) {
-            std::cout << "  Trying contour " << c << "..." << std::endl;
-
+        // Проверяем топ-5 контуров для каждой стратегии
+        for (size_t c = 0; c < contours.size() && c < 5; ++c) {
             std::vector<cv::Point2f> corners;
             if (approximateQuad(contours[c], corners)) {
-                detectedCorners = corners;
-                found = true;
-                successStrategy = (int)s;
-                std::cout << "  *** SUCCESS with strategy " << s
-                          << ", contour " << c << " ***" << std::endl;
+                StrategyResult res;
+                res.strategyIdx = (int)s;
+                res.strategyName = binarization.names[s];
+                res.corners = corners;
+                allResults.push_back(res);
+                std::cout << "  ✅ SUCCESS: Strategy " << s << ", Contour " << c << std::endl;
             }
         }
     }
 
-    if (!found) {
-        std::cerr << "\nError: Could not detect document corners in the image." << std::endl;
-        std::cerr << "Tips:" << std::endl;
-        std::cerr << "  - Ensure the document is fully visible in the image" << std::endl;
-        std::cerr << "  - Ensure there is contrast between document and background" << std::endl;
-        std::cerr << "  - Try adjusting Config parameters" << std::endl;
-
+    if (allResults.empty()) {
+        std::cerr << "\n❌ Error: All strategies failed to detect a valid document." << std::endl;
         if (Config::SHOW_WINDOWS) {
+            std::cout << "\nPress any key to close all windows..." << std::endl;
             cv::waitKey(0);
+            cv::destroyAllWindows();
         }
         return -1;
     }
 
-    // ------------------------------------------------------------------
-    // STEP 5: Corner Refinement
-    // ------------------------------------------------------------------
-    std::cout << "\n=== STEP 5: Corner Extraction and Sorting ===" << std::endl;
+    std::cout << "\n📊 Total valid detections found: " << allResults.size() << std::endl;
 
-    // Refine to sub-pixel accuracy
-    refineCorners(preproc.gray, detectedCorners);
+    // 2. Обрабатываем, выпрямляем и сохраняем КАЖДЫЙ успешный результат
+    for (size_t i = 0; i < allResults.size(); ++i) {
+        const auto& res = allResults[i];
+        std::string suffix = "_strat" + std::to_string(res.strategyIdx);
+        std::vector<cv::Point2f> refined = res.corners;
 
-    // Print final corners
-    const char* labels[] = {"Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"};
-    std::cout << "\n  Detected corners (on resized image):" << std::endl;
-    for (int i = 0; i < 4; i++) {
-        std::cout << "    " << labels[i] << ": ("
-                  << detectedCorners[i].x << ", " << detectedCorners[i].y << ")" << std::endl;
-    }
+        // STEP 5: Sub-pixel refinement
+        refineCorners(preproc.gray, refined);
 
-    // Visualize STEP 4: Draw the approximated polygon
-    {
-        cv::Mat polyVis = preproc.original.clone();
-        std::vector<cv::Point> polyPts;
-        for (const auto& p : detectedCorners) polyPts.push_back(cv::Point((int)p.x, (int)p.y));
-        cv::polylines(polyVis, polyPts, true, cv::Scalar(0, 255, 0), 3);
-        for (const auto& p : detectedCorners) {
-            cv::circle(polyVis, cv::Point((int)p.x, (int)p.y), 8, cv::Scalar(0, 0, 255), -1);
-        }
-        showIntermediate("Step 4: Approximated Polygon", polyVis, "step4_polygon.png");
-    }
-
-    // Visualize STEP 5: Final corner detection with labels
-    {
-        cv::Mat finalVis = preproc.original.clone();
-        cv::Scalar colors[] = {
-            cv::Scalar(255, 0, 0),    // Blue: TL
-            cv::Scalar(0, 255, 0),    // Green: TR
-            cv::Scalar(0, 0, 255),    // Red: BR
-            cv::Scalar(0, 255, 255)   // Yellow: BL
-        };
-
-        // Draw filled polygon with transparency
-        cv::Mat overlay = finalVis.clone();
-        std::vector<cv::Point> polyPts;
-        for (const auto& p : detectedCorners) polyPts.push_back(cv::Point((int)p.x, (int)p.y));
-        cv::fillConvexPoly(overlay, polyPts, cv::Scalar(0, 255, 0));
-        cv::addWeighted(overlay, 0.2, finalVis, 0.8, 0, finalVis);
-
-        // Draw edges
-        for (int i = 0; i < 4; i++) {
-            cv::line(finalVis,
-                     cv::Point((int)detectedCorners[i].x, (int)detectedCorners[i].y),
-                     cv::Point((int)detectedCorners[(i+1)%4].x, (int)detectedCorners[(i+1)%4].y),
-                     cv::Scalar(0, 255, 0), 3);
+        // Масштабируем углы обратно к оригинальному изображению
+        std::vector<cv::Point2f> origCorners(4);
+        for (int k = 0; k < 4; ++k) {
+            origCorners[k].x = refined[k].x / (float)preproc.scaleFactor;
+            origCorners[k].y = refined[k].y / (float)preproc.scaleFactor;
         }
 
-        // Draw corners with labels
-        for (int i = 0; i < 4; i++) {
-            cv::Point pt((int)detectedCorners[i].x, (int)detectedCorners[i].y);
-            // Outer circle (white border)
-            cv::circle(finalVis, pt, 14, cv::Scalar(255, 255, 255), 3);
-            // Inner circle (colored)
-            cv::circle(finalVis, pt, 12, colors[i], -1);
-            // Label
-            cv::putText(finalVis, labels[i], pt + cv::Point(15, -10),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 2);
-            cv::putText(finalVis, labels[i], pt + cv::Point(15, -10),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, colors[i], 1);
+        // 🖼️ Визуализация и сохранение Detected Corners
+        {
+            cv::Mat vis = preproc.original.clone();
+            cv::Scalar colors[] = {
+                cv::Scalar(255, 0, 0),    // Blue: TL
+                cv::Scalar(0, 255, 0),    // Green: TR
+                cv::Scalar(0, 0, 255),    // Red: BR
+                cv::Scalar(0, 255, 255)   // Yellow: BL
+            };
+            const char* labels[] = {"TL", "TR", "BR", "BL"};
+
+            std::vector<cv::Point> polyPts;
+            for (const auto& p : refined) polyPts.push_back(cv::Point((int)p.x, (int)p.y));
+            cv::polylines(vis, polyPts, true, cv::Scalar(0, 255, 0), 3);
+
+            for (int j = 0; j < 4; ++j) {
+                cv::Point pt((int)refined[j].x, (int)refined[j].y);
+                cv::circle(vis, pt, 12, colors[j], -1);
+                cv::circle(vis, pt, 14, cv::Scalar(255, 255, 255), 2);
+                cv::putText(vis, labels[j], pt + cv::Point(15, -10),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.5, colors[j], 1);
+            }
+
+            std::string saveName = "../iter_1_images/detected_corners" + suffix + ".jpg";
+            cv::imwrite(saveName, vis);
+            std::cout << "💾 Saved detected corners: " << saveName << std::endl;
         }
 
-        // Add info text
-        std::string infoText = "Strategy: " + binarization.names[successStrategy];
-        cv::putText(finalVis, infoText, cv::Point(10, 25),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0), 3);
-        cv::putText(finalVis, infoText, cv::Point(10, 25),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1);
+        // STEP 6: Perspective Rectification
+        cv::Mat rectified = rectifyDocument(inputImage, origCorners);
 
-        showIntermediate("Step 5: Detected Corners", finalVis, "step5_corners.png");
-        cv::imwrite("../iter_1_images/detected_corners_001.jpg", finalVis);
+        // Sharpening (как в оригинале)
+        cv::Mat sharpened;
+        cv::Mat sharpenKernel = (cv::Mat_<float>(3,3) << 0, -0.5, 0, -0.5, 3, -0.5, 0, -0.5, 0);
+        cv::filter2D(rectified, sharpened, -1, sharpenKernel);
+
+        std::string rectName = "../iter_1_images/rectified_document" + suffix + ".jpg";
+        cv::imwrite(rectName, sharpened);
+        std::cout << "💾 Saved rectified document: " << rectName << std::endl;
     }
 
     // ------------------------------------------------------------------
-    // STEP 6: Perspective Rectification
+    // CLEANUP & EXIT
     // ------------------------------------------------------------------
-    // Scale corners back to original image coordinates for high-res rectification
-    std::vector<cv::Point2f> originalCorners(4);
-    for (int i = 0; i < 4; i++) {
-        originalCorners[i].x = detectedCorners[i].x / (float)preproc.scaleFactor;
-        originalCorners[i].y = detectedCorners[i].y / (float)preproc.scaleFactor;
+    if (Config::SHOW_WINDOWS) {
+        std::cout << "\nPress any key to close all windows..." << std::endl;
+        cv::waitKey(0);
+        cv::destroyAllWindows();
     }
 
-    std::cout << "\n  Corners scaled to original image coordinates:" << std::endl;
-    for (int i = 0; i < 4; i++) {
-        std::cout << "    " << labels[i] << ": ("
-                  << originalCorners[i].x << ", " << originalCorners[i].y << ")" << std::endl;
-    }
-
-    cv::Mat rectified = rectifyDocument(inputImage, originalCorners);
-    cv::imwrite("../iter_1_images/rectified_document_001.jpg", rectified);
-
-    // ------------------------------------------------------------------
+/*    // ------------------------------------------------------------------
     // ОЦЕНКА КАЧЕСТВА ПОЛИГОНА (Вместо Canny Evaluation)
     // ------------------------------------------------------------------
     if (!gtCorners.empty()) {
@@ -1147,7 +1117,7 @@ int main(int argc, char** argv) {
         cv::waitKey(0);
         cv::destroyAllWindows();
     }
-
+*/
     return 0;
 }
 /*
