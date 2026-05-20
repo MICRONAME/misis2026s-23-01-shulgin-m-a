@@ -1061,6 +1061,7 @@ int main(int argc, char** argv) {
                     cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 1);
 
         showIntermediate("Step 5: Detected Corners", finalVis, "step5_corners.png");
+        cv::imwrite("../iter_1_images/detected_corners_001.jpg", finalVis);
     }
 
     // ------------------------------------------------------------------
@@ -1080,6 +1081,7 @@ int main(int argc, char** argv) {
     }
 
     cv::Mat rectified = rectifyDocument(inputImage, originalCorners);
+    cv::imwrite("../iter_1_images/rectified_document_001.jpg", rectified);
 
     // ------------------------------------------------------------------
     // ОЦЕНКА КАЧЕСТВА ПОЛИГОНА (Вместо Canny Evaluation)
